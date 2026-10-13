@@ -1,0 +1,17 @@
+name: 功能建议
+description: 说明你遇到的问题与希望的改进
+title: '[Feature] '
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的问题
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议的操作或行为
+      description: 优先考虑简洁、小范围的变化。不要填写密钥或个人信息。
+    validations:
+      required: true

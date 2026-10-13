@@ -1,0 +1,32 @@
+name: 问题反馈
+description: 提交可复现的功能或安装问题
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: 请勿填写 API Key、密码或上传 settings.json；截图仅保留应用区域。
+  - type: input
+    id: version
+    attributes:
+      label: Translate 版本、Windows 版本与缩放比例
+      placeholder: '0.2.0，Windows 11，175%'
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: 使用方式
+      options: [安装包, 便携 ZIP, 源码构建]
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 如为划词问题，请注明目标软件名称。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 预期行为与实际行为
+    validations:
+      required: true

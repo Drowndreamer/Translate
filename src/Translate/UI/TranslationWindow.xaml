@@ -1,0 +1,37 @@
+<Window x:Class="Translate.UI.TranslationWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Style="{StaticResource {x:Type Window}}" Title="Translate · 翻译" Width="420" Height="300" WindowStyle="None" ResizeMode="CanResize" MinWidth="320" MinHeight="220" ShowInTaskbar="False" ShowActivated="False" Topmost="True" Background="{DynamicResource SurfaceBrush}">
+ <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="7" GlassFrameThickness="1" CornerRadius="8" UseAeroCaptionButtons="False"/></shell:WindowChrome.WindowChrome>
+ <Window.Resources>
+  <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+  <!-- 轻量按钮：默认透明，悬停时显示浅底色 -->
+  <Style x:Key="Ghost" TargetType="Button">
+   <Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/><Setter Property="Background" Value="Transparent"/><Setter Property="Padding" Value="9,0"/><Setter Property="Height" Value="28"/><Setter Property="FontSize" Value="12"/><Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="Body" Background="{TemplateBinding Background}" BorderBrush="Transparent" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Body" Property="Background" Value="{DynamicResource LineBrush}"/><Setter Property="Foreground" Value="{DynamicResource TextBrush}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Body" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="Body" Property="Opacity" Value="0.4"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <!-- 强调按钮：浅主题色底 -->
+  <Style x:Key="Soft" TargetType="Button" BasedOn="{StaticResource Ghost}">
+   <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/><Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="Body" Background="{TemplateBinding Background}" BorderBrush="Transparent" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Body" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Body" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="Body" Property="Opacity" Value="0.4"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+ </Window.Resources>
+ <Border BorderBrush="{DynamicResource LineBrush}" BorderThickness="1" CornerRadius="8" Background="{DynamicResource SurfaceBrush}" Padding="16,12,16,12"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <!-- 标题栏：语言标签 + 关闭，可拖动 -->
+  <Grid Background="Transparent" MouseLeftButtonDown="HeaderDragged">
+   <Border HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource AccentSoftBrush}" CornerRadius="10" Padding="9,2,10,3"><TextBlock x:Name="DirectionLabel" Text="自动识别 · 中英互译" Foreground="{DynamicResource AccentBrush}" FontSize="11.5" FontWeight="SemiBold"/></Border>
+   <Button Style="{StaticResource Ghost}" Width="28" Padding="0" HorizontalAlignment="Right" Click="CloseClicked" AutomationProperties.Name="关闭翻译弹窗" ToolTip="关闭 (Esc)"><TextBlock Text="&#xE8BB;" FontFamily="{StaticResource IconFont}" FontSize="10"/></Button>
+  </Grid>
+  <!-- 原文：浅底卡片，左侧强调竖线 -->
+  <Border Grid.Row="1" Margin="0,10,0,0" Background="{DynamicResource CanvasBrush}" CornerRadius="6" BorderBrush="{DynamicResource LineBrush}" BorderThickness="2,0,0,0" Padding="10,6,8,7">
+   <TextBox x:Name="SourceBox" AcceptsReturn="True" PreviewKeyDown="SourceKeyDown" TextChanged="SourceChanged" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" MaxHeight="64" Padding="0" BorderThickness="0" Background="Transparent" Foreground="{DynamicResource MutedBrush}" FontSize="12.5" AutomationProperties.Name="中文或英文原文" ToolTip="输入中文或英文，Enter 翻译，Shift+Enter 换行" MinHeight="24"/>
+  </Border>
+  <!-- 译文 -->
+  <Grid Grid.Row="2" Margin="2,12,0,8"><TextBox x:Name="ResultBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="0" BorderThickness="0" Background="Transparent" FontSize="17" TextBlock.LineHeight="27" VerticalContentAlignment="Top" AutomationProperties.Name="划词译文"/><StackPanel x:Name="MessagePanel" VerticalAlignment="Top"><TextBlock x:Name="MessageText" Text="正在读取选中文字…" Foreground="{DynamicResource MutedBrush}" FontSize="13.5"/><Button x:Name="ConfigureButton" Content="配置 API" HorizontalAlignment="Left" Margin="0,12,0,0" Padding="12,5" MinHeight="30" Visibility="Collapsed" Style="{StaticResource Primary}" Click="ConfigureClicked"/></StackPanel></Grid>
+  <!-- 底栏：状态 + 操作 -->
+  <Grid Grid.Row="3"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <TextBlock x:Name="StateText" Text="" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="2,0,8,0" VerticalAlignment="Center"/>
+   <StackPanel Grid.Column="1" Orientation="Horizontal">
+    <Button x:Name="RetryButton" Style="{StaticResource Ghost}" IsEnabled="False" Click="RetryClicked" AutomationProperties.Name="重试"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,1,5,0"/><TextBlock Text="重试" VerticalAlignment="Center"/></StackPanel></Button>
+    <Button x:Name="CopyResultButton" Style="{StaticResource Soft}" Margin="6,0,0,0" IsEnabled="False" Click="CopyClicked" AutomationProperties.Name="复制"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C8;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,1,5,0"/><TextBlock Text="复制" VerticalAlignment="Center"/></StackPanel></Button>
+   </StackPanel>
+  </Grid>
+ </Grid></Border>
+</Window>
