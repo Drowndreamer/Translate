@@ -2,24 +2,44 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Media.Imaging;
+using Translate.Core;
 namespace Translate.Native;
-internal sealed class SelectionReader
+internal sealed class SelectionReader : IDisposable
 {
-    private readonly SemaphoreSlim _automationGate=new(1,1),_clipboardGate=new(1,1);
-    private sealed record AutomationResult(string Text,bool Password=false);
+    private readonly SemaphoreSlim _clipboardGate=new(1,1);
+    private readonly Lazy<AutomationWorker> _automation=new(()=>new AutomationWorker());
+    private readonly Lazy<ClipboardWorker> _clipboard=new(()=>new ClipboardWorker());
+    // Screenshot tools advertise bitmap, DIB and PNG representations together.
+    // Budget their total data while retaining every format for a lossless restore.
+    internal const long SnapshotBytes=128*1024*1024;
+    private readonly object _workers=new();
+    private volatile bool _disposed;
+    private sealed record AutomationResult(string Text,bool Password=false,bool TooLong=false);
     internal async Task<string> ReadAsync(SelectionRequest request,CancellationToken token)
     {
+        ObjectDisposedException.ThrowIf(_disposed,this);
+        token.ThrowIfCancellationRequested();
         if(Win32.GetForegroundWindow()!=request.Window)return "";
-        if(_automationGate.Wait(0)) {
-            var read=Task.Run(()=> {try{return ReadAutomation(request);}finally{_automationGate.Release();}});
+        Task<AutomationResult>? read;
+        lock(_workers){ObjectDisposedException.ThrowIf(_disposed,this);read=_automation.Value.TryRun(()=>ReadAutomation(request));}
+        if(read!=null) {
             try {
-                var result=await read.WaitAsync(TimeSpan.FromMilliseconds(350),token);
+                var result=await read.WaitAsync(TimeSpan.FromMilliseconds(350),token).ConfigureAwait(false);
                 if(result.Password)throw new InvalidOperationException("密码输入框不会被读取。");
-                if(!string.IsNullOrWhiteSpace(result.Text))return result.Text;
-            } catch(TimeoutException) {} // A slow provider is isolated from the input hook and UI.
+                if(result.TooLong)throw new InvalidOperationException("原文过长，请缩短到 20000 字符以内后重试。");
+                if(!string.IsNullOrWhiteSpace(result.Text)){TranslationLimits.ValidateInput(result.Text);return result.Text;}
+            } catch(TimeoutException) {} // A slow provider occupies only its own bounded worker.
         }
         token.ThrowIfCancellationRequested();
-        return await ReadClipboardAsync(request,token);
+        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(1500);var clipboardToken=timeout.Token;
+        try {
+            Task<string> copy;
+            lock(_workers){ObjectDisposedException.ThrowIf(_disposed,this);copy=_clipboard.Value.RunAsync(()=>ReadClipboardAsync(request,clipboardToken),clipboardToken);}
+            return await copy.WaitAsync(clipboardToken).ConfigureAwait(false);
+        } catch(OperationCanceledException) when(!token.IsCancellationRequested) {
+            throw new InvalidOperationException("读取剪贴板超时，请直接输入或粘贴到翻译页。");
+        }
     }
     private static AutomationResult ReadAutomation(SelectionRequest request)
     {
@@ -34,7 +54,14 @@ internal sealed class SelectionReader
                     if(current.Current.IsPassword)return new("",true);
                     if(current.TryGetCurrentPattern(TextPattern.Pattern,out var pattern)) {
                         var ranges=((TextPattern)pattern).GetSelection();
-                        var text=string.Join("\n",ranges.Select(r=>r.GetText(-1))).Trim();
+                        var selected=new System.Text.StringBuilder();
+                        foreach(var range in ranges) {
+                            if(selected.Length>0)selected.Append('\n');
+                            selected.Append(range.GetText(Math.Max(1,TranslationLimits.InputCharacters+1-selected.Length)));
+                            if(selected.Length>TranslationLimits.InputCharacters)break;
+                        }
+                        if(selected.Length>TranslationLimits.InputCharacters)return new("",TooLong:true);
+                        var text=selected.ToString().Trim();
                         if(!string.IsNullOrWhiteSpace(text))return new(text);
                     }
                 }
@@ -44,23 +71,46 @@ internal sealed class SelectionReader
     }
     internal static DataObject? SnapshotClipboard()
     {
-        var source=Clipboard.GetDataObject();if(source==null)return null;
-        var snapshot=new DataObject();
-        foreach(var format in source.GetFormats(false)) {
-            var value=source.GetData(format,false);
-            if(value==null)continue;
-            object copy=value switch {
-                string text=>text, string[] paths=>paths.ToArray(), byte[] bytes=>bytes.ToArray(),
-                MemoryStream memory=>new MemoryStream(memory.ToArray()),
-                BitmapSource bitmap=>CloneBitmap(bitmap),
-                System.Drawing.Image image=>image.Clone(),
-                int or long or short or bool=>value,
-                _=>throw new InvalidOperationException("当前剪贴板格式无法安全恢复，请手动粘贴到翻译页。")
-            };
-            if(format==DataFormats.Bitmap && copy is BitmapSource imageCopy) snapshot.SetImage(imageCopy);
-            else snapshot.SetData(format,copy,false);
-        }
-        return snapshot;
+        return SnapshotDataObject(Clipboard.GetDataObject());
+    }
+    internal static DataObject? SnapshotDataObject(IDataObject? source,long maximumBytes=SnapshotBytes)
+    {
+        if(maximumBytes<0)throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        if(source==null)return null;
+        var snapshot=new DataObject();long remaining=maximumBytes;
+        try {
+            var formats=source.GetFormats(false);
+            if(formats.Length>64)throw new InvalidOperationException("当前剪贴板内容过于复杂，请手动粘贴到翻译页。");
+            foreach(var format in formats) {
+                var value=source.GetData(format,false);if(value==null)continue;
+                long size=value switch {
+                    string text=>(long)text.Length*2, string[] paths=>paths.Sum(p=>(long)p.Length*2),
+                    byte[] bytes=>bytes.LongLength, MemoryStream memory=>memory.Length,
+                    BitmapSource bitmap=>(long)bitmap.PixelWidth*bitmap.PixelHeight*4,
+                    System.Drawing.Image image=>(long)image.Width*image.Height*4,
+                    int or long or short or bool=>8,
+                    _=>throw new InvalidOperationException("当前剪贴板格式无法安全恢复，请手动粘贴到翻译页。")
+                };
+                if(size>remaining)throw new InvalidOperationException("剪贴板备份内容过大，请手动粘贴到翻译页。");
+                remaining-=size;
+                object copy=value switch {
+                    string text=>text, string[] paths=>paths.ToArray(), byte[] bytes=>bytes.ToArray(),
+                    MemoryStream memory=>new MemoryStream(memory.ToArray()),
+                    BitmapSource bitmap=>CloneBitmap(bitmap), System.Drawing.Image image=>image.Clone(),
+                    _=>value
+                };
+                if(format==DataFormats.Bitmap&&copy is BitmapSource imageCopy)snapshot.SetImage(imageCopy);
+                else snapshot.SetData(format,copy,false);
+            }
+            return snapshot;
+        } catch{DisposeSnapshot(snapshot);throw;}
+    }
+    internal static void DisposeSnapshot(DataObject? snapshot)
+    {
+        if(snapshot==null)return;
+        var disposed=new HashSet<object>(ReferenceEqualityComparer.Instance);
+        foreach(var format in snapshot.GetFormats(false))
+            if(snapshot.GetData(format,false) is IDisposable resource&&disposed.Add(resource))resource.Dispose();
     }
     private static BitmapSource CloneBitmap(BitmapSource source) {var copy=source.Clone();copy.Freeze();return copy;}
     internal static bool RestoreClipboard(DataObject? snapshot,uint expectedSequence)
@@ -75,9 +125,10 @@ internal sealed class SelectionReader
         DataObject? snapshot=null;uint copiedSequence=0;
         try {
             if(Win32.GetForegroundWindow()!=request.Window || Win32.ModifiersPressed())return "";
+            var before=Win32.GetClipboardSequenceNumber();
             try {snapshot=SnapshotClipboard();} catch(ExternalException) {throw new InvalidOperationException("剪贴板正被其他程序使用，请稍后重试。");}
             token.ThrowIfCancellationRequested();
-            var before=Win32.GetClipboardSequenceNumber();
+            if(Win32.GetForegroundWindow()!=request.Window||Win32.ModifiersPressed()||Win32.GetClipboardSequenceNumber()!=before)return "";
             if(!Win32.Send(Win32.Key(0x11),Win32.Key(0x43),Win32.Key(0x43,true),Win32.Key(0x11,true)))return "";
             for(int i=0;i<24;i++) {
                 // Once Ctrl+C is sent, finish the bounded transaction even if the popup closes.
@@ -88,13 +139,31 @@ internal sealed class SelectionReader
                 Win32.GetWindowThreadProcessId(request.Window,out var targetPid);
                 if(ownerPid!=targetPid && ownerPid!=0)return "";
                 copiedSequence=seq;
-                token.ThrowIfCancellationRequested();
-                try {return Clipboard.ContainsText()?Clipboard.GetText().Trim():"";}catch(ExternalException){return "";}
+                try {
+                    // A copy can publish an empty/intermediate clipboard first. Finish
+                    // waiting for stable text even if the user has closed the popup.
+                    if(!Clipboard.ContainsText())continue;
+                    var text=Clipboard.GetText().Trim();
+                    if(Win32.GetClipboardSequenceNumber()!=seq||text.Length==0)continue;
+                    token.ThrowIfCancellationRequested();TranslationLimits.ValidateInput(text);return text;
+                }catch(ExternalException){}
             }
-            return "";
+            token.ThrowIfCancellationRequested();return "";
         } finally {
-            try {if(copiedSequence!=0)RestoreClipboard(snapshot,copiedSequence);}catch(ExternalException){}
-            _clipboardGate.Release();
+            try {
+                for(int attempt=0;copiedSequence!=0&&attempt<3;attempt++) {
+                    try{RestoreClipboard(snapshot,copiedSequence);break;}
+                    catch(ExternalException){if(attempt<2)await Task.Delay(30);}
+                }
+            } finally {try{DisposeSnapshot(snapshot);}finally{_clipboardGate.Release();}}
+        }
+    }
+    public void Dispose()
+    {
+        lock(_workers) {
+            if(_disposed)return;_disposed=true;
+            if(_automation.IsValueCreated)_automation.Value.Dispose();
+            if(_clipboard.IsValueCreated)_clipboard.Value.Dispose();
         }
     }
 }

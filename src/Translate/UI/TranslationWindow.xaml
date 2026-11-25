@@ -21,7 +21,7 @@
   </Grid>
   <!-- 原文：浅底卡片，左侧强调竖线 -->
   <Border Grid.Row="1" Margin="0,10,0,0" Background="{DynamicResource CanvasBrush}" CornerRadius="6" BorderBrush="{DynamicResource LineBrush}" BorderThickness="2,0,0,0" Padding="10,6,8,7">
-   <TextBox x:Name="SourceBox" AcceptsReturn="True" PreviewKeyDown="SourceKeyDown" TextChanged="SourceChanged" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" MaxHeight="64" Padding="0" BorderThickness="0" Background="Transparent" Foreground="{DynamicResource MutedBrush}" FontSize="12.5" AutomationProperties.Name="中文或英文原文" ToolTip="输入中文或英文，Enter 翻译，Shift+Enter 换行" MinHeight="24"/>
+   <TextBox x:Name="SourceBox" MaxLength="20000" UndoLimit="50" AcceptsReturn="True" PreviewKeyDown="SourceKeyDown" TextChanged="SourceChanged" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" MaxHeight="64" Padding="0" BorderThickness="0" Background="Transparent" Foreground="{DynamicResource MutedBrush}" FontSize="12.5" AutomationProperties.Name="中文或英文原文" ToolTip="输入中文或英文，Enter 翻译，Shift+Enter 换行" MinHeight="24"/>
   </Border>
   <!-- 译文 -->
   <Grid Grid.Row="2" Margin="2,12,0,8"><TextBox x:Name="ResultBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="0" BorderThickness="0" Background="Transparent" FontSize="17" TextBlock.LineHeight="27" VerticalContentAlignment="Top" AutomationProperties.Name="划词译文"/><StackPanel x:Name="MessagePanel" VerticalAlignment="Top"><TextBlock x:Name="MessageText" Text="正在读取选中文字…" Foreground="{DynamicResource MutedBrush}" FontSize="13.5"/><Button x:Name="ConfigureButton" Content="配置 API" HorizontalAlignment="Left" Margin="0,12,0,0" Padding="12,5" MinHeight="30" Visibility="Collapsed" Style="{StaticResource Primary}" Click="ConfigureClicked"/></StackPanel></Grid>

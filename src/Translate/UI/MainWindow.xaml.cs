@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using Translate.Core;
@@ -7,15 +8,16 @@ namespace Translate.UI;
 public partial class MainWindow : Window
 {
     private readonly AppController _controller;
+    private readonly BufferedTextOutput _output;
     private CancellationTokenSource? _translation,_test;
     private long _generation;
-    private bool _loading=true;
+    private bool _loading=true,_closed;
     internal bool AllowClose { get; set; }
     internal MainWindow(AppController controller)
     {
-        _controller=controller;InitializeComponent();ThemeService.WatchWindow(this);
+        _controller=controller;InitializeComponent();_output=new BufferedTextOutput(OutputBox);ThemeService.WatchWindow(this);
         LoadSettings();_loading=false;
-        Closing+=OnClosing;
+        Closing+=OnClosing;Closed+=(_,_)=>{_closed=true;_output.Dispose();};
     }
     internal void LoadSettings()
     {
@@ -57,30 +59,46 @@ public partial class MainWindow : Window
     private async void TestClicked(object sender,RoutedEventArgs e)
     {
         AppSettings draft;try{draft=Draft();}catch(Exception error){Status(error.Message,true);return;}
-        _test?.Cancel();_test=new();var token=_test.Token;TestButton.IsEnabled=false;Status("正在验证连接…");
-        try {var text="";await foreach(var part in _controller.Client.TranslateAsync("Hello, world!",draft,token))text+=part;Status("连接成功。测试译文："+text+"。请保存设置后使用。");}
-        catch(Exception error){if(!token.IsCancellationRequested)Status(TranslationClient.FriendlyError(error),true);}
-        finally{TestButton.IsEnabled=true;}
+        _test?.Cancel();var operation=new CancellationTokenSource();_test=operation;
+        var token=operation.Token;TestButton.IsEnabled=false;Status("正在验证连接…");
+        try {
+            var text=new StringBuilder();
+            await foreach(var part in _controller.Client.TranslateAsync("Hello, world!",draft,token))text.Append(part);
+            if(ReferenceEquals(_test,operation)&&!token.IsCancellationRequested&&!_closed)Status("连接成功。测试译文："+text+"。请保存设置后使用。");
+        } catch(Exception error){if(ReferenceEquals(_test,operation)&&!token.IsCancellationRequested&&!_closed)Status(TranslationClient.FriendlyError(error),true);}
+        finally{if(ReferenceEquals(_test,operation)){_test=null;if(!_closed)TestButton.IsEnabled=true;}operation.Dispose();}
     }
     private async void TranslateClicked(object sender,RoutedEventArgs e)
     {
         if(!_controller.Settings.IsConfigured){OpenSettings();Status("请先填写 API Key 并保存设置。",true);return;}
         var text=InputBox.Text.Trim();if(text.Length==0){Status("请先输入或粘贴中文或英文。",true);InputBox.Focus();return;}
-        _translation?.Cancel();_translation=new();var token=_translation.Token;var generation=++_generation;
-        OutputBox.Clear();OutputPlaceholder.Visibility=Visibility.Collapsed;TranslateButton.IsEnabled=false;CancelButton.Visibility=Visibility.Visible;CopyButton.IsEnabled=false;Status("正在翻译…");
+        _translation?.Cancel();var operation=new CancellationTokenSource();_translation=operation;
+        var token=operation.Token;var generation=++_generation;
+        _output.Clear();OutputPlaceholder.Visibility=Visibility.Collapsed;TranslateButton.IsEnabled=false;CancelButton.Visibility=Visibility.Visible;CopyButton.IsEnabled=false;Status("正在翻译…");
         try {
             await foreach(var chunk in _controller.Client.TranslateAsync(text,_controller.Settings.Copy(),token)) {
-                if(generation!=_generation)return;OutputBox.AppendText(chunk);CopyButton.IsEnabled=OutputBox.Text.Length>0;
+                if(generation!=_generation||token.IsCancellationRequested)return;
+                _output.Append(chunk);if(!CopyButton.IsEnabled)CopyButton.IsEnabled=true;
             }
-            if(generation==_generation)Status("翻译完成。");
-        } catch(Exception error){if(generation==_generation)Status(token.IsCancellationRequested?"已取消翻译。":TranslationClient.FriendlyError(error),!token.IsCancellationRequested);}
-        finally{if(generation==_generation){TranslateButton.IsEnabled=true;CancelButton.Visibility=Visibility.Collapsed;}}
+            if(generation==_generation&&!token.IsCancellationRequested&&!_closed)Status("翻译完成。");
+        } catch(Exception error){if(generation==_generation&&!_closed)Status(token.IsCancellationRequested?"已取消翻译。":TranslationClient.FriendlyError(error),!token.IsCancellationRequested);}
+        finally {
+            if(ReferenceEquals(_translation,operation))_translation=null;
+            if(generation==_generation&&!_closed){_output.Flush();TranslateButton.IsEnabled=true;CancelButton.Visibility=Visibility.Collapsed;}
+            operation.Dispose();
+        }
     }
     private void InputChanged(object sender,TextChangedEventArgs e)
     {
         if(DirectionLabel!=null)DirectionLabel.Text=TranslationLanguage.Label(InputBox.Text);
+        if(_translation!=null){_generation++;_translation.Cancel();_translation=null;_output.Clear();OutputPlaceholder.Visibility=Visibility.Visible;CopyButton.IsEnabled=false;TranslateButton.IsEnabled=true;CancelButton.Visibility=Visibility.Collapsed;Status("原文已更新，请重新翻译。");}
     }
     private void CancelClicked(object sender,RoutedEventArgs e)=>_translation?.Cancel();
-    private void CopyClicked(object sender,RoutedEventArgs e) {try{Clipboard.SetText(OutputBox.Text);Status("译文已复制。");}catch{Status("剪贴板正被占用，请稍后重试。",true);}}
-    private void OnClosing(object? sender,CancelEventArgs e) {if(!AllowClose){e.Cancel=true;Hide();}else{_translation?.Cancel();_test?.Cancel();}}
+    private void CopyClicked(object sender,RoutedEventArgs e) {try{_output.Flush();Clipboard.SetText(OutputBox.Text);Status("译文已复制。");}catch{Status("剪贴板正被占用，请稍后重试。",true);}}
+    private void OnClosing(object? sender,CancelEventArgs e)
+    {
+        _translation?.Cancel();_test?.Cancel();
+        if(!AllowClose){e.Cancel=true;Hide();}
+        else{_generation++;_translation=null;_test=null;}
+    }
 }

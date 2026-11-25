@@ -65,19 +65,24 @@ $env:ISCC_PATH = & ./scripts/install-inno.ps1
 # 开发启动与本机交互验证
  dotnet run --project src/Translate/Translate.csproj
  dotnet run --project tests/Translate.Tests/Translate.Tests.csproj -- --ui artifacts/qa
+
+# 桌面稳定性与流式显示基准（模拟 API，输出截图和 metrics.json）
+ dotnet run --project tests/Translate.Tests/Translate.Tests.csproj -- --reliability artifacts/qa-reliability
 ~~~
 
 完整打包命令为 ./build.ps1 -Package，输出在 artifacts/releases/版本/，包含安装包、便携 ZIP 和 SHA256SUMS.txt。发布版本只维护 Directory.Build.props 中的 Version；安装脚本、构建文件名和标签检查均读取此处。
 
-**测试范围**：-CI 执行语言检测、请求/SSE、取消、端点处理、DPAPI 临时配置及隔离单实例检查，不调用真实服务，不安装鼠标钩子、不操作剪贴板。--unit 另检查本机剪贴板；--ui 会移动鼠标、启动独立测试窗口、Edge、记事本和隔离配置的 VS Code。交互测试需在本机主动执行，结束后恢复剪贴板与鼠标位置；不要放进无人值守 CI。
+**测试范围**：-CI 执行语言检测、请求/SSE、异常响应大小限制、取消、线程隔离、诊断脱敏、端点处理、DPAPI 临时配置及隔离单实例检查，不调用真实服务，不安装鼠标钩子、不操作剪贴板。--unit 另检查本机剪贴板；--ui 会移动鼠标、启动独立测试窗口、Edge、记事本和隔离配置的 VS Code。交互测试需在本机主动执行，结束后恢复剪贴板与鼠标位置；不要放进无人值守 CI。
 
 GitHub Actions 的 main push 和 PR 执行自动检查；v* 标签推送构建并发布对应 Release。手动触发打包仅生成 Actions 构建产物。工作流采用官方 Actions 并固定提交 SHA。维护步骤见 [贡献与日常迭代](CONTRIBUTING.md)，实际本机结果见 [验证记录](验证记录.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。
 
 ## 当前限制
 
-暂不支持 OCR、历史记录、多配置、键盘触发、自动更新和 ARM64 原生构建。只处理可选中或可复制的文字；中英混合内容根据主要语言判断。高权限目标程序可能无法取词，可直接将文字粘贴到浮窗或主窗口。
+暂不支持 OCR、历史记录、多配置、键盘触发、自动更新和 ARM64 原生构建。单次原文最多 20000 字符，超限请分段翻译；只处理可选中或可复制的文字；中英混合内容根据主要语言判断。高权限目标程序可能无法取词，可直接将文字粘贴到浮窗或主窗口。
 
 尚未在第二台设备或混合缩放双屏上全面复测。安装包未代码签名，CI 自动检查不代表所有桌面交互都已验证。
+
+异常诊断保存在 %LOCALAPPDATA%/Translate/diagnostics，最多保留两个 256 KiB 文件，仅包含异常类型与方法栈，不包含翻译内容、Key 或接口地址。稳定性与性能实测见 [0.2.2 验证记录](docs/reliability-2026-11-10.md)。
 
 问题请提交 [Issue](https://github.com/Drowndreamer/Translate/issues)，不要附带 Key、密码、配置文件或个人信息。
 

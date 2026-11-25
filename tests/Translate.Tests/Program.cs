@@ -17,7 +17,7 @@ using TextBox=System.Windows.Controls.TextBox;
 using Button=System.Windows.Controls.Button;
 using Point=System.Windows.Point;
 namespace Translate.Tests;
-internal static class Program
+internal static partial class Program
 {
     private static int _count;
     private static void Check(bool condition,string name) {if(!condition)throw new Exception("FAIL: "+name);Console.WriteLine("PASS: "+name);_count++;}
@@ -27,10 +27,15 @@ internal static class Program
         try {
             switch(args.FirstOrDefault()) {
                 case "--ci": Unit(false);break;
+                case "--clipboard-snapshot": ClipboardSnapshotChecks();break;
+                case "--reliability": Reliability(args.ElementAtOrDefault(1)??"artifacts/qa-reliability",args.Contains("--selection-only"));break;
+                case "--background-stability": Reliability(args.ElementAtOrDefault(1)??"artifacts/qa-background",backgroundOnly:true);break;
+                case "--background-process": BackgroundProcessChecks(int.Parse(args[1])).GetAwaiter().GetResult();break;
                 case "--live": Live().GetAwaiter().GetResult();break;
                 case "--live-config": Live(true).GetAwaiter().GetResult();break;
                 case "--ui": UiSmoke(args.ElementAtOrDefault(1)??"artifacts/qa");break;
-                case "--fixture": Fixture(args[1],args.ElementAtOrDefault(2)=="fallback");break;
+                case "--ui-input": UiSmoke(args.ElementAtOrDefault(1)??"artifacts/qa-reliability-input",true);break;
+                case "--fixture": Fixture(args[1],args.ElementAtOrDefault(2)=="fallback",args.ElementAtOrDefault(2)=="long");break;
                 default: Unit();break;
             }
             Console.WriteLine($"Completed: {_count} checks.");return 0;
@@ -39,6 +44,7 @@ internal static class Program
     private static void Unit(bool interactive=true)
     {
         LanguageChecks();
+        ClipboardSnapshotChecks();
         var g=new RightClickGesture();
         Check(g.Down(100,100,0)==GestureEffect.Suppress,"capture right-down");
         Check(g.Up(100)==GestureEffect.ReplayClick,"short press replays context click");
@@ -60,6 +66,7 @@ internal static class Program
         }finally{DeleteTestDirectory(temp);}
         if(interactive)ClipboardChecks();else Console.WriteLine("INFO: CI excludes desktop clipboard and global input checks.");ApiChecks().GetAwaiter().GetResult();
         SingleInstanceChecks();
+        ReliabilityUnitChecks().GetAwaiter().GetResult();
     }
     private static void SingleInstanceChecks()
     {
@@ -109,7 +116,7 @@ internal static class Program
             Clipboard.SetText("temporary selected text");var copied=Win32.GetClipboardSequenceNumber();Clipboard.SetText("new user copy");
             Check(!SelectionReader.RestoreClipboard(saved,copied)&&Clipboard.GetText()=="new user copy","later user copy preserved");
             var rich=new DataObject();rich.SetText("plain");rich.SetData(DataFormats.Html,"<p><b>rich</b></p>");Clipboard.SetDataObject(rich,true);
-            var richSaved=SelectionReader.SnapshotClipboard();Clipboard.SetText("temporary");SelectionReader.RestoreClipboard(richSaved,Win32.GetClipboardSequenceNumber());Check((string?)Clipboard.GetData(DataFormats.Html)=="<p><b>rich</b></p>","HTML clipboard retained");
+            var richSaved=SelectionReader.SnapshotClipboard();Clipboard.SetText("temporary");var htmlRestored=SelectionReader.RestoreClipboard(richSaved,Win32.GetClipboardSequenceNumber());var restoredHtml=Clipboard.GetData(DataFormats.Html);if(restoredHtml is not string html||html!="<p><b>rich</b></p>")Console.WriteLine($"HTML clipboard diagnostic: restored={htmlRestored}; snapshotHasHtml={richSaved?.GetDataPresent(DataFormats.Html,false)}; resultType={restoredHtml?.GetType().Name??"none"}");Check((string?)restoredHtml=="<p><b>rich</b></p>","HTML clipboard retained");
             var bitmap=BitmapSource.Create(2,2,96,96,PixelFormats.Bgra32,null,new byte[16],8);Clipboard.SetImage(bitmap);
             Check(Clipboard.ContainsImage(),"image fixture available");var imageSaved=SelectionReader.SnapshotClipboard();Clipboard.SetText("temporary");SelectionReader.RestoreClipboard(imageSaved,Win32.GetClipboardSequenceNumber());Check(Clipboard.ContainsImage(),"image clipboard retained");
             var drop=new DataObject();drop.SetData(DataFormats.FileDrop,new[]{Path.GetTempPath()});Clipboard.SetDataObject(drop,true);var files=SelectionReader.SnapshotClipboard();Clipboard.SetText("temporary");SelectionReader.RestoreClipboard(files,Win32.GetClipboardSequenceNumber());Check(Clipboard.ContainsFileDropList(),"file clipboard retained");
@@ -165,7 +172,7 @@ internal static class Program
         }
         settings.ApiKey="";
     }
-    private static void UiSmoke(string output)
+    private static void UiSmoke(string output,bool inputOnly=false)
     {
         Directory.CreateDirectory(output);var temp=Path.Combine(Path.GetTempPath(),"Translate-ui-"+Guid.NewGuid().ToString("N"));
         var app=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};app.Resources.MergedDictionaries.Add(new ResourceDictionary{Source=new Uri("pack://application:,,,/Translate;component/UI/Styles.xaml")});
@@ -181,6 +188,7 @@ internal static class Program
         int exitCode=0;
         app.Startup+=async(_,_)=>{
             try{
+                if(inputOnly){controller.SaveSettings(new AppSettings{ApiKey="unit-test-credential"});controller.Start();controller.Main.Hide();await InputChecks(controller,output,temp);return;}
                 controller.ShowMain(true);await Task.Delay(250);ThemeService.Apply(false);await Task.Delay(100);Capture(controller.Main,Path.Combine(output,"settings-light.png"));
                 var main=controller.Main;main.BaseUrlBox.Text="https://api.deepseek.com";main.ModelBox.Text="deepseek-flash";main.KeyBox.Password="ui-test-credential";main.SaveButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(controller.Settings.IsConfigured,"settings form saves encrypted configuration");main.TranslateNav.IsChecked=true;main.InputBox.Text="workspace";main.TranslateButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));await Task.Delay(200);
@@ -215,8 +223,8 @@ internal static class Program
         Win32.GetCursorPos(out var cursor);
         try {
             var drag=Task.Run(async()=>{
-                Win32.SetCursorPos(bounds.Right-7,bounds.Bottom-7);await Task.Delay(180);Console.WriteLine($"Resize input: foreground={Win32.GetForegroundWindow()==hwnd}, left={(Win32.GetAsyncKeyState(1)&0x8000)!=0}, right={(Win32.GetAsyncKeyState(2)&0x8000)!=0}");if(!Win32.Send(UnmarkedMouse(2)))throw new Exception("Resize mouse injection failed.");await Task.Delay(250);
-                for(int i=1;i<=6;i++){Win32.SetCursorPos(bounds.Right-7+i*15,bounds.Bottom-7+i*9);await Task.Delay(60);}
+                using var cursorLock=new CursorLock();cursorLock.Move(bounds.Right-7,bounds.Bottom-7);await Task.Delay(180);Console.WriteLine($"Resize input: foreground={Win32.GetForegroundWindow()==hwnd}, left={(Win32.GetAsyncKeyState(1)&0x8000)!=0}, right={(Win32.GetAsyncKeyState(2)&0x8000)!=0}");if(!Win32.Send(UnmarkedMouse(2)))throw new Exception("Resize mouse injection failed.");await Task.Delay(250);
+                for(int i=1;i<=6;i++){cursorLock.Move(bounds.Right-7+i*15,bounds.Bottom-7+i*9);await Task.Delay(60);}
                 Win32.Send(UnmarkedMouse(4));
             });
             await drag;await Task.Delay(180);Win32.GetWindowRect(hwnd,out var resized);
@@ -252,6 +260,26 @@ internal static class Program
         window.UpdateLayout();Win32.GetWindowRect(new WindowInteropHelper(window).Handle,out var rect);
         using var bitmap=new System.Drawing.Bitmap(rect.Right-rect.Left,rect.Bottom-rect.Top);using(var graphics=System.Drawing.Graphics.FromImage(bitmap))graphics.CopyFromScreen(rect.Left,rect.Top,0,0,bitmap.Size);bitmap.Save(filename,System.Drawing.Imaging.ImageFormat.Png);
     }
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool GetClipCursor(out Win32.RECT rect);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool ClipCursor(ref Win32.RECT rect);
+    private sealed class CursorLock : IDisposable
+    {
+        private readonly Win32.RECT _previous;
+        private readonly bool _restore;
+        internal CursorLock()
+        {
+            _restore=GetClipCursor(out _previous);Win32.GetCursorPos(out var point);
+            var bounds=new Win32.RECT{Left=point.X,Top=point.Y,Right=point.X+1,Bottom=point.Y+1};
+            if(_restore)ClipCursor(ref bounds);
+        }
+        internal void Move(int x,int y){var bounds=new Win32.RECT{Left=x,Top=y,Right=x+1,Bottom=y+1};if(_restore)ClipCursor(ref bounds);Win32.SetCursorPos(x,y);}
+        public void Dispose(){if(_restore){var previous=_previous;ClipCursor(ref previous);}}
+    }
+    private static async Task HoldRightClick(int milliseconds,Win32.POINT? position=null)
+    {
+        using var cursor=new CursorLock();if(position is {} anchor)cursor.Move(anchor.X,anchor.Y);Win32.Send(UnmarkedMouse(8));
+        try{await Task.Delay(milliseconds);}finally{Win32.Send(UnmarkedMouse(16));}
+    }
     private static Win32.INPUT UnmarkedMouse(uint flags){var input=Win32.Mouse(flags);input.data.mi.dwExtraInfo=0;return input;}
     private static async Task WaitUntil(Func<bool> check,int milliseconds=2500)
     {for(int i=0;i<milliseconds/25;i++){if(check())return;await Task.Delay(25);}throw new Exception("Timed out waiting for UI state.");}
@@ -259,32 +287,45 @@ internal static class Program
     {
         if((Win32.GetAsyncKeyState(1)&0x8000)!=0)Win32.Send(UnmarkedMouse(4));if((Win32.GetAsyncKeyState(2)&0x8000)!=0)Win32.Send(UnmarkedMouse(16));Win32.GetCursorPos(out var originalCursor);DataObject? original=SelectionReader.SnapshotClipboard();
         try{
-            foreach(bool fallback in new[]{false,true}){
-                var status=Path.Combine(temp,fallback?"fallback-status.txt":"selection-status.txt");
+            foreach(var mode in new[]{"uia","clipboard","large-clipboard"}){
+                bool fallback=mode!="uia",largeClipboard=mode=="large-clipboard";
+                var status=Path.Combine(temp,mode+"-status.txt");
                 var exe=Environment.ProcessPath!;var start=new System.Diagnostics.ProcessStartInfo(exe){UseShellExecute=false};start.ArgumentList.Add("--fixture");start.ArgumentList.Add(status);if(fallback)start.ArgumentList.Add("fallback");
                 using var fixture=System.Diagnostics.Process.Start(start)!;
                 try{
-                    await WaitUntil(()=>File.Exists(status));await Task.Delay(150);fixture.Refresh();var hwnd=fixture.MainWindowHandle;Win32.SetForegroundWindow(hwnd);await Task.Delay(350);Win32.GetWindowRect(hwnd,out var rect);var fixtureScale=Win32.GetDpiForWindow(hwnd)/96.0;Win32.SetCursorPos(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale));
+                    await WaitUntil(()=>File.Exists(status));await Task.Delay(150);fixture.Refresh();var hwnd=fixture.MainWindowHandle;Win32.SetForegroundWindow(hwnd);await Task.Delay(150);if(Win32.GetForegroundWindow()!=hwnd){Win32.Send(Win32.Key(0x12),Win32.Key(0x12,true));Win32.SetForegroundWindow(hwnd);await Task.Delay(200);}
+                    Win32.GetWindowRect(hwnd,out var rect);var fixtureScale=Win32.GetDpiForWindow(hwnd)/96.0;Win32.SetCursorPos(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale));
                     Check(Win32.GetForegroundWindow()==hwnd,"fixture is foreground ("+(fallback?"clipboard":"UIA")+")");
                     if(!fallback){
-                        Win32.Send(UnmarkedMouse(8));await Task.Delay(80);Win32.Send(UnmarkedMouse(16));await WaitUntil(()=>File.ReadAllText(status).Contains("menu"));Check(true,"real short right-click opens target context menu");Win32.Send(Win32.Key(0x1B),Win32.Key(0x1B,true));await Task.Delay(100);
+                        await HoldRightClick(80,new(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale)));await WaitUntil(()=>File.ReadAllText(status).Contains("menu"));Check(true,"real short right-click opens target context menu");Win32.PostMessage(hwnd,0x804D,0,0);await Task.Delay(100);
                     }
-                    Win32.SetForegroundWindow(hwnd);await Task.Delay(200);Win32.SetCursorPos(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale));await Task.Delay(100);if(!fallback){Win32.Send(Win32.Key(0x11),Win32.Key(0x41),Win32.Key(0x41,true),Win32.Key(0x11,true));await Task.Delay(100);}var menusBefore=File.ReadAllLines(status).Count(line=>line=="menu");Clipboard.SetText("user clipboard before translation");
-                    Win32.Send(UnmarkedMouse(8));await Task.Delay(400);Win32.Send(UnmarkedMouse(16));try{await WaitUntil(()=>controller.Popup.IsVisible&&controller.Popup.ResultBox.Text=="工作区");}catch{Console.Error.WriteLine($"Input diagnostic: visible={controller.Popup.IsVisible}; message={controller.Popup.MessageText.Text}; source={controller.Popup.SourceBox.Text}; fixture={File.ReadAllText(status).Trim().Replace("\n","/")}; modifiers={Win32.ModifiersPressed()}");throw;}
-                    Check(controller.Popup.SourceBox.Text=="workspace","real "+(fallback?"clipboard fallback":"UIA selection")+" extraction");Check(Clipboard.GetText()=="user clipboard before translation","global translation preserves clipboard");
-                    Check(File.ReadAllLines(status).Count(line=>line=="menu")==menusBefore,"long press does not add target context menu");Capture(controller.Popup,Path.Combine(output,fallback?"popup-clipboard.png":"popup-global.png"));
+                    Win32.SetForegroundWindow(hwnd);await Task.Delay(200);Win32.SetCursorPos(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale));await Task.Delay(100);if(!fallback){Win32.PostMessage(hwnd,0x804D,0,0);await Task.Delay(100);}var menusBefore=File.ReadAllLines(status).Count(line=>line=="menu");
+                    if(largeClipboard){
+                        var pixels=new byte[3840*2160*4];pixels[0]=73;pixels[3]=255;
+                        Clipboard.SetImage(BitmapSource.Create(3840,2160,96,96,PixelFormats.Bgra32,null,pixels,3840*4));
+                    }else Clipboard.SetText("user clipboard before translation");
+                    await HoldRightClick(400,new(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale)));try{await WaitUntil(()=>controller.Popup.IsVisible&&controller.Popup.ResultBox.Text=="工作区");}catch{Console.Error.WriteLine($"Input diagnostic: visible={controller.Popup.IsVisible}; message={controller.Popup.MessageText.Text}; source={controller.Popup.SourceBox.Text}; fixture={File.ReadAllText(status).Trim().Replace("\n","/")}; modifiers={Win32.ModifiersPressed()}; foreground={Win32.GetForegroundWindow()==hwnd}");throw;}
+                    Check(controller.Popup.SourceBox.Text=="workspace","real "+(fallback?"clipboard fallback":"UIA selection")+" extraction");
+                    if(largeClipboard){
+                        var restoredImage=Clipboard.GetImage();
+                        Check(restoredImage?.PixelWidth==3840&&restoredImage.PixelHeight==2160,"4K clipboard image survives right-click translation");
+                        var pixel=new byte[4];restoredImage!.CopyPixels(new Int32Rect(0,0,1,1),pixel,4,0);
+                        Check(pixel[0]==73&&pixel[3]==255,"restored 4K clipboard image retains its pixel data");
+                    }else Check(Clipboard.GetText()=="user clipboard before translation","global translation preserves clipboard");
+                    Check(File.ReadAllLines(status).Count(line=>line=="menu")==menusBefore,"long press does not add target context menu");Capture(controller.Popup,Path.Combine(output,largeClipboard?"popup-large-clipboard.png":fallback?"popup-clipboard.png":"popup-global.png"));
                     var escape=Win32.Key(0x1B);escape.data.ki.dwExtraInfo=0;var escapeUp=Win32.Key(0x1B,true);escapeUp.data.ki.dwExtraInfo=0;Win32.Send(escape,escapeUp);await WaitUntil(()=>!controller.Popup.IsVisible);Check(true,"Escape closes passive popup");
-                    Win32.Send(UnmarkedMouse(8));await Task.Delay(380);Win32.Send(UnmarkedMouse(16));await WaitUntil(()=>controller.Popup.IsVisible&&controller.Popup.ResultBox.Text=="工作区");
+                    Win32.SetForegroundWindow(hwnd);Win32.PostMessage(hwnd,0x804D,0,0);Win32.SetCursorPos(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale));await Task.Delay(100);
+                    await HoldRightClick(380,new(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale)));await WaitUntil(()=>controller.Popup.IsVisible&&controller.Popup.ResultBox.Text=="工作区");
                     Win32.SetCursorPos(rect.Left+20,rect.Top+40);Win32.Send(UnmarkedMouse(2),UnmarkedMouse(4));await WaitUntil(()=>!controller.Popup.IsVisible);Check(true,"outside click dismisses popup");
                     if(fallback){
                         Win32.SetForegroundWindow(hwnd);await Task.Delay(200);
                         var copies=File.ReadAllLines(status).Count(line=>line=="copy");Clipboard.SetText("clipboard before canceled capture");Win32.SetCursorPos(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale));
-                        Win32.Send(UnmarkedMouse(8));try{await WaitUntil(()=>File.ReadAllLines(status).Count(line=>line=="copy")>copies);controller.Popup.Dismiss();}finally{Win32.Send(UnmarkedMouse(16));}await Task.Delay(300);
+                        using(var cursor=new CursorLock()){cursor.Move(rect.Left+(int)(70*fixtureScale),rect.Top+(int)(85*fixtureScale));Win32.Send(UnmarkedMouse(8));try{await WaitUntil(()=>File.ReadAllLines(status).Count(line=>line=="copy")>copies);controller.Popup.Dismiss();}finally{Win32.Send(UnmarkedMouse(16));}}await Task.Delay(300);
                         Check(Clipboard.GetText()=="clipboard before canceled capture","closing popup during copy still restores clipboard");
                     }
                 }finally{controller.Popup.Dismiss();if(!fixture.HasExited){fixture.Kill();fixture.WaitForExit(1500);}}
             }
-        }finally{Win32.Send(UnmarkedMouse(4),UnmarkedMouse(16));Win32.SetCursorPos(originalCursor.X,originalCursor.Y);if(original==null)Clipboard.Clear();else Clipboard.SetDataObject(original,true);}
+        }finally{Win32.Send(UnmarkedMouse(4),UnmarkedMouse(16));Win32.SetCursorPos(originalCursor.X,originalCursor.Y);try{if(original==null)Clipboard.Clear();else Clipboard.SetDataObject(original,true);}finally{SelectionReader.DisposeSnapshot(original);}}
     }
 
     private static nint FindWindow(string title)
@@ -315,7 +356,7 @@ internal static class Program
                     if(name!="Edge")Win32.Send(Win32.Key(0x11),Win32.Key(0x41),Win32.Key(0x41,true),Win32.Key(0x11,true));
                     await Task.Delay(250);Win32.GetWindowRect(hwnd,out var rect);Win32.SetCursorPos(rect.Left+150,rect.Top+180);
                     Clipboard.SetText("clipboard preserved during "+name);
-                    Win32.Send(UnmarkedMouse(8));await Task.Delay(380);Win32.Send(UnmarkedMouse(16));
+                    await HoldRightClick(380,new(rect.Left+150,rect.Top+180));
                     try{await WaitUntil(()=>controller.Popup.IsVisible&&controller.Popup.ResultBox.Text=="工作区",5000);}catch{Console.Error.WriteLine($"Compatibility diagnostic: app={name}; visible={controller.Popup.IsVisible}; message={controller.Popup.MessageText.Text}; source={controller.Popup.SourceBox.Text}; result={controller.Popup.ResultBox.Text}; foreground={Win32.GetForegroundWindow()==hwnd}");throw;}
                     Check(controller.Popup.SourceBox.Text.Trim()=="workspace",name+" selected text translation");
                     Check(Clipboard.GetText()=="clipboard preserved during "+name,name+" clipboard preservation");Capture(controller.Popup,Path.Combine(output,"popup-"+name.ToLowerInvariant()+".png"));
@@ -328,16 +369,19 @@ internal static class Program
         } finally{Win32.SetCursorPos(originalCursor.X,originalCursor.Y);if(original==null)Clipboard.Clear();else Clipboard.SetDataObject(original,true);}
     }
 
-    private static void Fixture(string status,bool fallback)
+    private static void Fixture(string status,bool fallback,bool oversized=false)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(status)!);var app=new Application();var window=new Window{Title="Translate selection fixture",Width=580,Height=260,Left=55,Top=80,WindowStartupLocation=WindowStartupLocation.Manual};
-        var menu=new System.Windows.Controls.ContextMenu();menu.Items.Add(new MenuItem{Header="Fixture menu"});menu.Opened+=(_,_)=>File.AppendAllText(status,"menu\n");
-        if(!fallback){var box=new TextBox{Text="workspace",FontSize=26,Margin=new Thickness(28),ContextMenu=menu};window.Content=box;window.Loaded+=(_,_)=>{window.Activate();box.Focus();box.SelectAll();File.WriteAllText(status,"ready\n");};}
+        var menu=new System.Windows.Controls.ContextMenu();menu.Items.Add(new MenuItem{Header="Fixture menu"});menu.Opened+=(_,_)=>File.AppendAllText(status,"menu\n");menu.Closed+=(_,_)=>File.AppendAllText(status,"menu-closed\n");
+        if(!fallback){var box=new TextBox{Text=oversized?new string(' ',100)+new string('x',TranslationLimits.InputCharacters):"workspace",FontSize=26,Margin=new Thickness(28),ContextMenu=menu};box.SelectionChanged+=(_,_)=>File.AppendAllText(status,"selection:"+box.SelectionLength+"\n");window.Content=box;window.Loaded+=(_,_)=>{window.Activate();box.Focus();box.SelectAll();File.WriteAllText(status,"ready\n");};}
         else{
             var panel=new System.Windows.Controls.Border{Background=Brushes.White,Focusable=true,ContextMenu=menu,Child=new TextBlock{Text="workspace",FontSize=26,Margin=new Thickness(28)}};window.Content=panel;
-            window.PreviewKeyDown+=async(_,e)=>{if(e.Key==System.Windows.Input.Key.C&&System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control)){e.Handled=true;File.AppendAllText(status,"copy\n");await Task.Delay(120);Clipboard.SetText("workspace");}};
+            window.PreviewKeyDown+=async(_,e)=>{if(e.Key==System.Windows.Input.Key.C&&System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control)){e.Handled=true;File.AppendAllText(status,"copy\n");Clipboard.Clear();await Task.Delay(120);Clipboard.SetText("workspace");}};
             window.Loaded+=(_,_)=>{window.Activate();panel.Focus();File.WriteAllText(status,"ready\n");};
         }
+        window.SourceInitialized+=(_,_)=>HwndSource.FromHwnd(new WindowInteropHelper(window).Handle)?.AddHook((nint hwnd,int message,nint w,nint l,ref bool handled)=>{
+            if(message==0x804D){menu.IsOpen=false;if(window.Content is TextBox input){input.Focus();input.SelectAll();}else if(window.Content is FrameworkElement content)content.Focus();handled=true;}return 0;
+        });
         app.Run(window);
     }
 }
