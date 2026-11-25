@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 namespace Translate.Native;
 internal static class Win32
 {
-    internal const uint WM_MOUSEMOVE=0x200, WM_LBUTTONDOWN=0x201, WM_RBUTTONDOWN=0x204, WM_RBUTTONUP=0x205, WM_MBUTTONDOWN=0x207, WM_KEYDOWN=0x100, WM_KEYUP=0x101, WM_SYSKEYDOWN=0x104, WM_SYSKEYUP=0x105, WM_QUIT=0x12, WM_TICK=0x800B;
+    internal const uint WM_MOUSEMOVE=0x200, WM_LBUTTONDOWN=0x201, WM_RBUTTONDOWN=0x204, WM_RBUTTONUP=0x205, WM_MBUTTONDOWN=0x207, WM_KEYDOWN=0x100, WM_KEYUP=0x101, WM_SYSKEYDOWN=0x104, WM_SYSKEYUP=0x105, WM_QUIT=0x12, WM_TIMER=0x113, WM_HOOKERROR=0x800C;
     internal static readonly nuint InputMarker = 0x5452414E;
     internal delegate bool EnumWindowsProc(nint hwnd,nint parameter);
     [DllImport("user32.dll")] internal static extern bool EnumWindows(EnumWindowsProc callback,nint parameter);
@@ -28,6 +28,8 @@ internal static class Win32
     [DllImport("user32.dll")] internal static extern bool PeekMessage(out MSG msg,nint hwnd,uint min,uint max,uint remove);
     [DllImport("user32.dll")] internal static extern bool TranslateMessage(in MSG msg);
     [DllImport("user32.dll")] internal static extern nint DispatchMessage(in MSG msg);
+    [DllImport("user32.dll",SetLastError=true)] internal static extern nuint SetTimer(nint hwnd,nuint id,uint milliseconds,nint callback);
+    [DllImport("user32.dll")] internal static extern bool KillTimer(nint hwnd,nuint id);
     [DllImport("user32.dll")] internal static extern bool PostThreadMessage(uint thread,uint message,nuint w,nint l);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] internal static extern nint GetModuleHandle(string? name);
     [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();

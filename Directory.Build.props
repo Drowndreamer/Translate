@@ -1,4 +1,4 @@
 <Project>
   <!-- 唯一发布版本来源；版本标签必须为 v + Version。 -->
-  <PropertyGroup><Version>0.2.0</Version></PropertyGroup>
+  <PropertyGroup><Version>0.2.2</Version></PropertyGroup>
 </Project>

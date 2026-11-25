@@ -14,13 +14,14 @@ public partial class TranslationWindow : Window
     internal event Action? SourceEdited;
     internal event Action? ConfigureRequested;
     internal bool AllowClose { get; set; }
+    private readonly BufferedTextOutput _output;
     private Win32.POINT _anchor;
     private bool _settingSource,_composing;
     private Size? _preferredSize;
     private Win32.RECT _sizeBeforeDrag;
     internal TranslationWindow()
     {
-        InitializeComponent();ThemeService.WatchWindow(this);Closing+=OnClosing;
+        InitializeComponent();_output=new BufferedTextOutput(ResultBox);ThemeService.WatchWindow(this);Closing+=OnClosing;Closed+=(_,_)=>_output.Dispose();
         SourceInitialized+=(_,_)=>HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(WindowMessage);
         TextCompositionManager.AddPreviewTextInputStartHandler(SourceBox,(_,_)=>_composing=true);
         TextCompositionManager.AddPreviewTextInputHandler(SourceBox,(_,_)=>_composing=false);
@@ -59,7 +60,7 @@ public partial class TranslationWindow : Window
     }
     private void ClearResult()
     {
-        ResultBox.Clear();StateText.Text="";StateText.ToolTip=null;MessagePanel.Visibility=Visibility.Visible;
+        _output.Clear();StateText.Text="";StateText.ToolTip=null;MessagePanel.Visibility=Visibility.Visible;
         MessageText.SetResourceReference(TextBlock.ForegroundProperty,"MutedBrush");ConfigureButton.Visibility=Visibility.Collapsed;CopyResultButton.IsEnabled=false;
     }
     private void SourceChanged(object sender,TextChangedEventArgs e)
@@ -81,11 +82,17 @@ public partial class TranslationWindow : Window
         if(text.Length==0){Error("请先输入中文或英文。");return;}
         TranslationRequested?.Invoke(text);
     }
-    internal void Append(string chunk){MessagePanel.Visibility=Visibility.Collapsed;ResultBox.AppendText(chunk);CopyResultButton.IsEnabled=ResultBox.Text.Length>0;StateText.Text="正在翻译…";}
-    internal void Complete()=>StateText.Text="翻译完成";
+    internal void Append(string chunk)
+    {
+        if(chunk.Length==0)return;
+        if(_output.Length==0){MessagePanel.Visibility=Visibility.Collapsed;CopyResultButton.IsEnabled=true;StateText.Text="正在翻译…";}
+        _output.Append(chunk);
+    }
+    internal void Complete(){_output.Flush();StateText.Text="翻译完成";}
     internal void Error(string message,bool configure=false)
     {
-        if(ResultBox.Text.Length==0){MessagePanel.Visibility=Visibility.Visible;MessageText.Text=message;MessageText.SetResourceReference(TextBlock.ForegroundProperty,"ErrorBrush");}
+        _output.Flush();
+        if(_output.Length==0){MessagePanel.Visibility=Visibility.Visible;MessageText.Text=message;MessageText.SetResourceReference(TextBlock.ForegroundProperty,"ErrorBrush");}
         else StateText.Text=message;
         ConfigureButton.Visibility=configure?Visibility.Visible:Visibility.Collapsed;StateText.ToolTip=message;
     }
@@ -100,15 +107,15 @@ public partial class TranslationWindow : Window
         x=Math.Clamp(x,info.rcWork.Left,Math.Max(info.rcWork.Left,info.rcWork.Right-width));y=Math.Clamp(y,info.rcWork.Top,Math.Max(info.rcWork.Top,info.rcWork.Bottom-height));
         Win32.SetWindowPos(new WindowInteropHelper(this).Handle,new nint(-1),x,y,width,height,0x10|0x40);
     }
-    internal void Dismiss(){if(IsVisible)Hide();_composing=false;Dismissed?.Invoke();}
+    internal void Dismiss(){_output.Flush();if(IsVisible)Hide();_composing=false;Dismissed?.Invoke();}
     private void CloseClicked(object sender,RoutedEventArgs e)=>Dismiss();
     private void RetryClicked(object sender,RoutedEventArgs e)=>SubmitSource();
     private void ConfigureClicked(object sender,RoutedEventArgs e){Dismiss();ConfigureRequested?.Invoke();}
-    private void CopyClicked(object sender,RoutedEventArgs e){try{Clipboard.SetText(ResultBox.Text);StateText.Text="已复制";}catch{StateText.Text="剪贴板正被占用";}}
+    private void CopyClicked(object sender,RoutedEventArgs e){try{_output.Flush();Clipboard.SetText(ResultBox.Text);StateText.Text="已复制";}catch{StateText.Text="剪贴板正被占用";}}
     private void HeaderDragged(object sender,MouseButtonEventArgs e)
     {
         var element=e.OriginalSource as DependencyObject;
-        while(element!=null){if(element is Button)return;element=VisualTreeHelper.GetParent(element);}
+        while(element!=null){if(element is Button)return;element=element is Visual or System.Windows.Media.Media3D.Visual3D?VisualTreeHelper.GetParent(element):LogicalTreeHelper.GetParent(element);}
         try{DragMove();}catch(InvalidOperationException){}
     }
     private void OnClosing(object? sender,CancelEventArgs e){if(!AllowClose){e.Cancel=true;Dismiss();}}
